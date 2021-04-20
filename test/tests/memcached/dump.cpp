@@ -16,29 +16,36 @@ TEST_CASE("memcached_dump") {
 
   LOOPED_SECTION(tests) {
     auto memc = &test.memc;
+    auto meta = GENERATE(0, 1);
 
-    SECTION("prepared with 64 KVs") {
-      for (int i = 0; i < 64; ++i) {
-        char key[8];
-        int len = snprintf(key, sizeof(key) - 1, "k_%d", i);
+    DYNAMIC_SECTION("meta=" << meta) {
+      if (!meta || test.isGEVersion(1, 6)) {
+        SECTION("prepared with 64 KVs") {
+          REQUIRE_SUCCESS(memcached_behavior_set(memc, MEMCACHED_BEHAVIOR_META_PROTOCOL, meta));
 
-        CHECKED_IF(len) {
-          REQUIRE_SUCCESS(memcached_set(memc, key, len, key, len, 0, 0));
+          for (int i = 0; i < 64; ++i) {
+            char key[8];
+            int len = snprintf(key, sizeof(key) - 1, "k_%d", i);
+
+            CHECKED_IF(len) {
+              REQUIRE_SUCCESS(memcached_set(memc, key, len, key, len, 0, 0));
+            }
+          }
+
+          memcached_quit(memc);
+
+          // let memcached sort itself
+          using namespace chrono_literals;
+          this_thread::sleep_for(3s);
+
+          SECTION("dumps 64 KVs") {
+            size_t counter = 0;
+            memcached_dump_fn fn[] = {dump_cb};
+
+            REQUIRE_SUCCESS(memcached_dump(memc, fn, &counter, 1));
+            REQUIRE(counter == 64);
+          }
         }
-      }
-
-      memcached_quit(memc);
-
-      // let memcached sort itself
-      using namespace chrono_literals;
-      this_thread::sleep_for(3s);
-
-      SECTION("dumps 64 KVs") {
-        size_t counter = 0;
-        memcached_dump_fn fn[] = {dump_cb};
-
-        REQUIRE_SUCCESS(memcached_dump(memc, fn, &counter, 1));
-        REQUIRE(counter == 64);
       }
     }
   }

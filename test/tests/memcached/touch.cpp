@@ -5,11 +5,17 @@ TEST_CASE("memcached_touch") {
   auto test = MemcachedCluster::mixed();
   auto memc = &test.memc;
   memcached_return_t rc;
-  auto binary = GENERATE(0, 1);
+  auto proto = GENERATE(as<memcached_behavior_t>{}, 0, MEMCACHED_BEHAVIOR_BINARY_PROTOCOL, MEMCACHED_BEHAVIOR_META_PROTOCOL);
 
-  test.enableBinaryProto(binary);
+  if (proto) {
+    REQUIRE_SUCCESS(memcached_behavior_set(memc, proto, 1));
+  }
 
-  DYNAMIC_SECTION("touch binary=" << binary) {
+  if (proto == MEMCACHED_BEHAVIOR_META_PROTOCOL && !test.isGEVersion(1, 6)) {
+    return;
+  }
+
+  DYNAMIC_SECTION("touch " << (proto ? libmemcached_string_behavior(proto) + sizeof("MEMCACHED_BEHAVIOR") : "ASCII_PROTOCOL")) {
     REQUIRE_FALSE(memcached_get(memc, S(__func__), nullptr, nullptr, &rc));
     REQUIRE_RC(MEMCACHED_NOTFOUND, rc);
 
@@ -30,7 +36,7 @@ TEST_CASE("memcached_touch") {
     REQUIRE_FALSE(*val);
   }
 
-  DYNAMIC_SECTION("touch_by_key binary=" << binary) {
+  DYNAMIC_SECTION("touch_by_key " << (proto ? libmemcached_string_behavior(proto) + sizeof("MEMCACHED_BEHAVIOR") : "ASCII_PROTOCOL")) {
     REQUIRE_RC(MEMCACHED_NOTFOUND, memcached_touch_by_key(memc, S(__func__), S(__func__), 60));
     REQUIRE_SUCCESS(memcached_set_by_key(memc, S(__func__), S(__func__), S(__func__), 2, 0));
 

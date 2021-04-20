@@ -164,8 +164,8 @@ memcached_result_st *memcached_fetch_result(memcached_st *ptr, memcached_result_
     *error = MEMCACHED_END;
   } else if (*error == MEMCACHED_MAXIMUM_RETURN and result->count) {
     *error = MEMCACHED_END;
-  } else if (*error == MEMCACHED_MAXIMUM_RETURN) // while() loop was never entered
-  {
+  } else if (*error == MEMCACHED_MAXIMUM_RETURN) {
+    // while() loop was never entered
     *error = MEMCACHED_NOTFOUND;
   } else if (connection_failures) {
     /*

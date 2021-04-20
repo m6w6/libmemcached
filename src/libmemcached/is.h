@@ -26,6 +26,7 @@
 #define memcached_is_udp(__object)                    ((__object)->flags.use_udp)
 #define memcached_is_verify_key(__object)             ((__object)->flags.verify_key)
 #define memcached_is_binary(__object)                 ((__object)->flags.binary_protocol)
+#define memcached_is_meta(__object)                   ((__object)->flags.meta_protocol)
 #define memcached_is_fetching_version(__object)       ((__object)->flags.is_fetching_version)
 #define memcached_is_buffering(__object)              ((__object)->flags.buffer_requests)
 #define memcached_is_replying(__object)               ((__object)->flags.reply)
@@ -47,6 +48,7 @@
 #define memcached_set_udp(__object, __flag)        ((__object).flags.use_udp = __flag)
 #define memcached_set_verify_key(__object, __flag) ((__object).flags.verify_key = __flag)
 #define memcached_set_binary(__object, __flag)     ((__object).flags.binary_protocol = __flag)
+#define memcached_set_meta(__object, __flag)       ((__object).flags.meta_protocol = __flag)
 #define memcached_set_fetching_version(__object, __flag) \
   ((__object).flags.is_fetching_version = __flag)
 #define memcached_set_buffering(__object, __flag) ((__object).flags.buffer_requests = __flag)

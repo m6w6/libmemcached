@@ -39,6 +39,47 @@ static void auto_response(memcached_instance_st *instance, const bool reply, mem
   }
 }
 
+static memcached_return_t meta_incr_decr(memcached_instance_st *instance, bool is_incr, bool w_init,
+                                         const char *key, size_t key_len,
+                                         uint64_t offset, uint64_t initial, uint32_t expiration) {
+  char new_buf[32] = " N", inl_buf[32] = " J", dlt_buf[32] = " D", exp_buf[32] = " T";
+  size_t new_len = strlen(new_buf), inl_len = strlen(inl_buf), dlt_len = strlen(dlt_buf), exp_len = strlen(exp_buf);
+  size_t io_num = 0;
+  libmemcached_io_vector_st io_vec[10] = {};
+
+  io_vec[io_num++] = {memcached_literal_param("ma ")};
+  io_vec[io_num++] = {memcached_array_string(instance->root->_namespace),
+                      memcached_array_size(instance->root->_namespace)},
+  io_vec[io_num++] = {key, key_len};
+
+  if (!is_incr) {
+    io_vec[io_num++] = {memcached_literal_param(" MD")};
+  }
+  if (w_init) {
+    new_len += snprintf(new_buf + new_len, sizeof(new_buf) - new_len, "%" PRIu32, expiration);
+    io_vec[io_num++] = {new_buf, new_len};
+    inl_len += snprintf(inl_buf + inl_len, sizeof(inl_buf) - inl_len, "%" PRIu64, initial);
+    io_vec[io_num++] = {inl_buf, inl_len};
+  }
+  if (offset != 1) {
+    dlt_len += snprintf(dlt_buf + dlt_len, sizeof(dlt_buf) - dlt_len, "%" PRIu64, offset);
+    io_vec[io_num++] = {dlt_buf, dlt_len};
+  }
+  if (expiration) {
+    exp_len += snprintf(exp_buf + exp_len, sizeof(exp_buf) - exp_len, "%" PRIu32, expiration);
+    io_vec[io_num++] = {exp_buf, exp_len};
+  }
+
+  if (memcached_is_replying(instance->root)) {
+    io_vec[io_num++] = {memcached_literal_param(" v")};
+  } else {
+    io_vec[io_num++] = {memcached_literal_param(" q")};
+  }
+  io_vec[io_num++] = {memcached_literal_param(" O+\r\n")};
+
+  return memcached_vdo(instance, io_vec, io_num, true);
+}
+
 static memcached_return_t text_incr_decr(memcached_instance_st *instance, const bool is_incr,
                                          const char *key, size_t key_length, const uint64_t offset,
                                          const bool reply) {
@@ -145,6 +186,8 @@ static memcached_return_t increment_decrement_by_key(const protocol_binary_comma
   if (memcached_is_binary(memc)) {
     rc = binary_incr_decr(instance, command, key, key_length, uint64_t(offset), 0,
                           MEMCACHED_EXPIRATION_NOT_ADD, reply);
+  } else if (memcached_is_meta(memc)) {
+    rc = meta_incr_decr(instance, command == PROTOCOL_BINARY_CMD_INCREMENT, false, key, key_length, offset, 0, 0);
   } else {
     rc = text_incr_decr(instance, command == PROTOCOL_BINARY_CMD_INCREMENT ? true : false, key,
                         key_length, offset, reply);
@@ -189,7 +232,9 @@ increment_decrement_with_initial_by_key(const protocol_binary_command command, M
   if (memcached_is_binary(memc)) {
     rc = binary_incr_decr(instance, command, key, key_length, offset, initial, uint32_t(expiration),
                           reply);
-
+  } else if (memcached_is_meta(memc)) {
+    rc = meta_incr_decr(instance, command == PROTOCOL_BINARY_CMD_INCREMENT, true,
+                        key, key_length, offset, initial, uint32_t(expiration));
   } else {
     rc = memcached_set_error(
         *memc, MEMCACHED_INVALID_ARGUMENTS, MEMCACHED_AT,

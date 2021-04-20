@@ -125,6 +125,17 @@ public:
       }
       return true;
     };
+    def("meta", 'm', no_argument, "Use the text based meta memcached protocol.")
+        .apply = [](const client_options &opt_, const extended_option &ext, memcached_st *memc) {
+      if (MEMCACHED_SUCCESS != memcached_behavior_set(memc, MEMCACHED_BEHAVIOR_META_PROTOCOL, ext.set)) {
+        if (!opt_.isset("quiet")) {
+          std::cerr << memcached_last_error_message(memc);
+        }
+        return false;
+      }
+      return true;
+    };
+
     def("buffer", 'B', no_argument, "Buffer requests.")
         .apply = [](const client_options &opt, const extended_option &ext, memcached_st *memc) {
       if (MEMCACHED_SUCCESS != memcached_behavior_set(memc, MEMCACHED_BEHAVIOR_BUFFER_REQUESTS, ext.set)) {

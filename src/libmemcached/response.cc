@@ -16,11 +16,243 @@
 #include "libmemcached/common.h"
 #include "libmemcached/string.hpp"
 
+static inline memcached_return_t ascii_read_inc(memcached_instance_st *instance, const char *buffer,
+    memcached_result_st *result) {
+  {
+    errno = 0;
+    unsigned long long int auto_return_value = strtoull(buffer, (char **) NULL, 10);
+
+    if (errno) {
+      result->numeric_value = UINT64_MAX;
+      return memcached_set_error(*instance, MEMCACHED_UNKNOWN_READ_FAILURE, MEMCACHED_AT,
+          memcached_literal_param("Numeric response was out of range"));
+    }
+
+    result->numeric_value = uint64_t(auto_return_value);
+    return MEMCACHED_SUCCESS;
+  }
+}
+
+static inline memcached_return_t ascii_read_ull(size_t &value, char **string_ptr, char *end_ptr) {
+  char *next_ptr = *string_ptr;
+
+  errno = 0;
+  value = strtoull(next_ptr, string_ptr, 10);
+
+  if (errno) {
+    return MEMCACHED_ERRNO;
+  }
+  if (*string_ptr >= end_ptr) {
+    return MEMCACHED_PARTIAL_READ;
+  }
+  return MEMCACHED_SUCCESS;
+}
+
+static inline memcached_return_t ascii_read_key(char *buf, size_t len, char **str_ptr, char *end_ptr) {
+  char *tmp_ptr = buf;
+  while (**str_ptr != ' ' && **str_ptr != '\r') {
+    *(tmp_ptr++) = *((*str_ptr)++);
+    if (*str_ptr == end_ptr || size_t(tmp_ptr - buf) >= len) {
+      return MEMCACHED_PARTIAL_READ;
+    }
+  }
+  *tmp_ptr = 0;
+  return MEMCACHED_SUCCESS;
+}
+
+static inline memcached_return_t ascii_read_val(memcached_instance_st *instance, memcached_result_st *result,
+                                                ssize_t &to_read) {
+  /* We add two bytes so that we can walk the \r\n */
+  if (memcached_failed(memcached_string_check(&result->value, to_read))) {
+    return memcached_set_error(*instance, MEMCACHED_MEMORY_ALLOCATION_FAILURE, MEMCACHED_AT);
+  }
+
+  {
+    char *value_ptr = memcached_string_value_mutable(&result->value);
+    /*
+      We read the \r\n into the string since not doing so is more
+      cycles then the waster of memory to do so.
+
+      We are null terminating through, which will most likely make
+      some people lazy about using the return length.
+    */
+    memcached_return_t read_rc = memcached_io_read(instance, value_ptr, to_read, to_read);
+    if (memcached_failed(read_rc)) {
+      if (read_rc == MEMCACHED_IN_PROGRESS) {
+        memcached_quit_server(instance, true);
+        return memcached_set_error(*instance, MEMCACHED_IN_PROGRESS, MEMCACHED_AT);
+      }
+      return read_rc;
+    }
+
+    /* This next bit blows the API, but this is internal....*/
+    {
+      char *char_ptr = memcached_string_value_mutable(&result->value);
+      char_ptr[--to_read] = 0;
+      char_ptr[--to_read] = 0;
+      memcached_string_set_length(&result->value, to_read);
+    }
+
+    return MEMCACHED_SUCCESS;
+  }
+}
+
+static memcached_return_t result_decrypt(memcached_instance_st *instance, memcached_result_st *result) {
+  memcached_return_t rc = MEMCACHED_SUCCESS;
+
+  if (memcached_result_length(result)) {
+    hashkit_string_st *destination = hashkit_decrypt(&instance->root->hashkit, memcached_result_value(result),
+                                       memcached_result_length(result));
+    if(!destination) {
+      return memcached_set_error(*instance->root, MEMCACHED_FAILURE, MEMCACHED_AT,
+                               memcached_literal_param("hashkit_decrypt() failed"));
+    }
+
+    memcached_result_reset_value(result);
+
+    rc = memcached_result_set_value(result, hashkit_string_c_str(destination), hashkit_string_length(destination));
+    if (memcached_failed(rc)) {
+      rc = memcached_set_error(*instance->root, MEMCACHED_FAILURE, MEMCACHED_AT,
+                               memcached_literal_param("hashkit_decrypt() failed"));
+    }
+
+    hashkit_string_free(destination);
+  }
+
+  return rc;
+}
+
+static memcached_return_t meta_fetch_flags(memcached_instance_st *instance, char *str_ptr, char *end_ptr,
+                                           memcached_result_st *result, char opaque[MEMCACHED_MAX_KEY]) {
+  size_t ull_val;
+  char *tmp_ptr;
+
+  while (str_ptr < end_ptr && *str_ptr != '\r') {
+    switch (*str_ptr++) {
+    case ' ':
+      break;
+
+    case 'c': // CAS
+      if (MEMCACHED_SUCCESS != ascii_read_ull(ull_val, &str_ptr, end_ptr)) {
+        goto read_error;
+      }
+      result->item_cas = ull_val;
+      break;
+
+    case 'f':
+      if (MEMCACHED_SUCCESS != ascii_read_ull(ull_val, &str_ptr, end_ptr)) {
+        goto read_error;
+      }
+      result->item_flags = ull_val;
+      break;
+
+    case 'k':
+      str_ptr += memcached_array_size(instance->root->_namespace);
+      if (str_ptr >= end_ptr) {
+        goto read_error;
+      }
+      tmp_ptr = str_ptr;
+      if (MEMCACHED_SUCCESS != ascii_read_key(result->item_key, sizeof(result->item_key), &str_ptr, end_ptr)) {
+        goto read_error;
+      }
+      result->key_length = str_ptr - tmp_ptr;
+      break;
+
+    case 'l':
+      if (ascii_read_ull(ull_val, &str_ptr, end_ptr)) {
+        goto read_error;
+      }
+      /* legacy result does not support last_accessed */
+      break;
+
+    case 'O':
+      tmp_ptr = str_ptr;
+      if (MEMCACHED_SUCCESS != ascii_read_key(opaque, MEMCACHED_MAX_KEY, &str_ptr, end_ptr)) {
+        goto read_error;
+      }
+      /* legacy result does not support opaque */
+      break;
+
+    case 's': // size
+      if (MEMCACHED_SUCCESS != ascii_read_ull(ull_val, &str_ptr, end_ptr)) {
+        goto read_error;
+      }
+      /* legacy result does not support size */
+      break;
+
+    case 't':
+      if (MEMCACHED_SUCCESS != ascii_read_ull(ull_val, &str_ptr, end_ptr)) {
+        goto read_error;
+      }
+      result->item_expiration = time_t(ull_val);
+      break;
+
+    case 'W':
+    case 'X':
+    case 'Z':
+      /* legacy result does not support re-cache semantics */
+      break;
+    }
+  }
+
+  return MEMCACHED_SUCCESS;
+read_error:
+  memcached_io_reset(instance);
+  return MEMCACHED_PARTIAL_READ;
+}
+
+static memcached_return_t meta_va_fetch(memcached_instance_st *instance, char *buffer,
+                                        memcached_result_st *result) {
+  char opaque[MEMCACHED_MAX_KEY] = "";
+  char *str_ptr = buffer + sizeof("VA");
+  char *end_ptr = buffer + MEMCACHED_DEFAULT_COMMAND_SIZE;
+  size_t ull_val, val_len;
+  memcached_return_t rc;
+
+  while (isspace(*str_ptr) && str_ptr < end_ptr) {
+    ++str_ptr;
+  }
+  if (str_ptr == end_ptr) {
+    goto read_error;
+  }
+
+  if (MEMCACHED_SUCCESS != ascii_read_ull(ull_val, &str_ptr, end_ptr)) {
+    goto read_error;
+  }
+  val_len = ull_val;
+
+  rc = meta_fetch_flags(instance, str_ptr, end_ptr, result, opaque);
+  if (memcached_success(rc)) {
+    auto read_len = ssize_t(val_len + 2);
+    rc = ascii_read_val(instance, result, read_len);
+    if (memcached_success(rc)) {
+      if (read_len != ssize_t(val_len)) {
+        goto read_error;
+      }
+
+      /* meta INC/DEC response */
+      if ('+' == *opaque) {
+        rc = ascii_read_inc(instance, result->value.string, result);
+      } else if (memcached_is_encrypted(instance->root)) {
+        rc = result_decrypt(instance, result);
+        if (memcached_failed(rc)) {
+          memcached_result_reset(result);
+        }
+      }
+    }
+  }
+
+  return rc;
+
+read_error:
+  memcached_io_reset(instance);
+  return MEMCACHED_PARTIAL_READ;
+}
+
 static memcached_return_t textual_value_fetch(memcached_instance_st *instance, char *buffer,
                                               memcached_result_st *result) {
-  char *next_ptr;
   ssize_t read_length = 0;
-  size_t value_length;
+  size_t value_length, ull_val;
 
   WATCHPOINT_ASSERT(instance->root);
   char *end_ptr = buffer + MEMCACHED_DEFAULT_COMMAND_SIZE;
@@ -61,14 +293,10 @@ static memcached_return_t textual_value_fetch(memcached_instance_st *instance, c
     goto read_error;
   }
 
-  for (next_ptr = string_ptr; isdigit(*string_ptr); string_ptr++) {
-  };
-  errno = 0;
-  result->item_flags = (uint32_t) strtoul(next_ptr, &string_ptr, 10);
-
-  if (errno or end_ptr == string_ptr) {
+  if (MEMCACHED_SUCCESS != ascii_read_ull(ull_val, &string_ptr, end_ptr)) {
     goto read_error;
   }
+  result->item_flags = ull_val;
 
   /* Length fetch move past space*/
   string_ptr++;
@@ -76,14 +304,10 @@ static memcached_return_t textual_value_fetch(memcached_instance_st *instance, c
     goto read_error;
   }
 
-  for (next_ptr = string_ptr; isdigit(*string_ptr); string_ptr++) {
-  };
-  errno = 0;
-  value_length = (size_t) strtoull(next_ptr, &string_ptr, 10);
-
-  if (errno or end_ptr == string_ptr) {
+  if (MEMCACHED_SUCCESS != ascii_read_ull(ull_val, &string_ptr, end_ptr)) {
     goto read_error;
   }
+  value_length = ull_val;
 
   /* Skip spaces */
   if (*string_ptr == '\r') {
@@ -91,84 +315,37 @@ static memcached_return_t textual_value_fetch(memcached_instance_st *instance, c
     string_ptr += 2;
   } else {
     string_ptr++;
-    for (next_ptr = string_ptr; isdigit(*string_ptr); string_ptr++) {
-    };
-    errno = 0;
-    result->item_cas = strtoull(next_ptr, &string_ptr, 10);
+    if (MEMCACHED_SUCCESS != ascii_read_ull(ull_val, &string_ptr, end_ptr)) {
+      goto read_error;
+    }
+    result->item_cas = ull_val;
   }
 
-  if (errno or end_ptr < string_ptr) {
+  if (end_ptr < string_ptr) {
     goto read_error;
   }
 
-  /* We add two bytes so that we can walk the \r\n */
-  if (memcached_failed(memcached_string_check(&result->value, value_length + 2))) {
-    return memcached_set_error(*instance, MEMCACHED_MEMORY_ALLOCATION_FAILURE, MEMCACHED_AT);
+  read_length = ssize_t(value_length + 2);
+  rc = ascii_read_val(instance, result, read_length);
+  if (MEMCACHED_SUCCESS != rc) {
+    return rc;
   }
 
-  {
-    char *value_ptr = memcached_string_value_mutable(&result->value);
-    /*
-      We read the \r\n into the string since not doing so is more
-      cycles then the waster of memory to do so.
-
-      We are null terminating through, which will most likely make
-      some people lazy about using the return length.
-    */
-    size_t to_read = (value_length) + 2;
-    memcached_return_t rrc = memcached_io_read(instance, value_ptr, to_read, read_length);
-    if (memcached_failed(rrc) and rrc == MEMCACHED_IN_PROGRESS) {
-      memcached_quit_server(instance, true);
-      return memcached_set_error(*instance, MEMCACHED_IN_PROGRESS, MEMCACHED_AT);
-    } else if (memcached_failed(rrc)) {
-      return rrc;
-    }
-  }
-
-  if (read_length != (ssize_t)(value_length + 2)) {
+  if (read_length != (ssize_t)(value_length)) {
     goto read_error;
   }
 
-  /* This next bit blows the API, but this is internal....*/
-  {
-    char *char_ptr;
-    char_ptr = memcached_string_value_mutable(&result->value);
-    ;
-    char_ptr[value_length] = 0;
-    char_ptr[value_length + 1] = 0;
-    memcached_string_set_length(&result->value, value_length);
-  }
-
-  if (memcached_is_encrypted(instance->root) and memcached_result_length(result)) {
-    hashkit_string_st *destination;
-
-    if ((destination = hashkit_decrypt(&instance->root->hashkit, memcached_result_value(result),
-                                       memcached_result_length(result)))
-        == NULL)
-    {
-      rc = memcached_set_error(*instance->root, MEMCACHED_FAILURE, MEMCACHED_AT,
-                               memcached_literal_param("hashkit_decrypt() failed"));
-    } else {
-      memcached_result_reset_value(result);
-      if (memcached_failed(memcached_result_set_value(result, hashkit_string_c_str(destination),
-                                                      hashkit_string_length(destination))))
-      {
-        rc = memcached_set_error(*instance->root, MEMCACHED_FAILURE, MEMCACHED_AT,
-                                 memcached_literal_param("hashkit_decrypt() failed"));
-      }
-    }
-
+  if (memcached_is_encrypted(instance->root)) {
+    rc = result_decrypt(instance, result);
     if (memcached_failed(rc)) {
       memcached_result_reset(result);
     }
-    hashkit_string_free(destination);
   }
 
   return rc;
 
 read_error:
   memcached_io_reset(instance);
-
   return MEMCACHED_PARTIAL_READ;
 }
 
@@ -186,11 +363,15 @@ static memcached_return_t textual_read_one_response(memcached_instance_st *insta
   switch (buffer[0]) {
   case 'V': {
     // VALUE
-    if (buffer[1] == 'A' and buffer[2] == 'L' and buffer[3] == 'U' and buffer[4] == 'E') /* VALUE */
+    if (buffer[1] == 'A' and  buffer[2] == 'L' and buffer[3] == 'U' and buffer[4] == 'E') /* VALUE */
     {
       /* We add back in one because we will need to search for END */
       memcached_server_response_increment(instance);
       return textual_value_fetch(instance, buffer, result);
+    }
+    // VA
+    else if (buffer[1] == 'A' && buffer[2] == ' ') {
+      return meta_va_fetch(instance, buffer, result);
     }
     // VERSION
     else if (buffer[1] == 'E' and buffer[2] == 'R' and buffer[3] == 'S' and buffer[4] == 'I'
@@ -304,12 +485,18 @@ static memcached_return_t textual_read_one_response(memcached_instance_st *insta
 
   case 'N': {
     // NOT_FOUND
-    if (buffer[1] == 'O' and buffer[2] == 'T' and buffer[3] == '_' and buffer[4] == 'F'
+    if (buffer[1] == 'F') {
+      return MEMCACHED_NOTFOUND;
+    }
+    else if (buffer[1] == 'O' and buffer[2] == 'T' and buffer[3] == '_' and buffer[4] == 'F'
         and buffer[5] == 'O' and buffer[6] == 'U' and buffer[7] == 'N' and buffer[8] == 'D')
     {
       return MEMCACHED_NOTFOUND;
     }
     // NOT_STORED
+    else if (buffer[1] == 'S') {
+      return MEMCACHED_NOTSTORED;
+    }
     else if (buffer[1] == 'O' and buffer[2] == 'T' and buffer[3] == '_' and buffer[4] == 'S'
              and buffer[5] == 'T' and buffer[6] == 'O' and buffer[7] == 'R' and buffer[8] == 'E'
              and buffer[9] == 'D')
@@ -318,29 +505,28 @@ static memcached_return_t textual_read_one_response(memcached_instance_st *insta
     }
   } break;
 
+  case 'M': /* META NOOP */
+    if (buffer[1] == 'N') {
+      return MEMCACHED_END;
+    }
+    break;
+
   case 'E': /* PROTOCOL ERROR or END */
   {
     // END
-    if (buffer[1] == 'N' and buffer[2] == 'D') {
-      return MEMCACHED_END;
-    }
-#if 0
-      // PROTOCOL_ERROR
-      else if (buffer[1] == 'R' and buffer[2] == 'O' and buffer[3] == 'T' and buffer[4] == 'O' and buffer[5] == 'C' and buffer[6] == 'O' and buffer[7] == 'L'
-               and buffer[8] == '_'
-               and buffer[9] == 'E' and buffer[10] == 'R' and buffer[11] == 'R' and buffer[12] == 'O' and buffer[13] == 'R')
-      {
-        return MEMCACHED_PROTOCOL_ERROR;
+    if (buffer[1] == 'N') {
+      if (buffer[2] == 'D') {
+        return MEMCACHED_END;
       }
-#endif
+      return MEMCACHED_NOTFOUND;
+    }
     // ERROR
     else if (buffer[1] == 'R' and buffer[2] == 'R' and buffer[3] == 'O' and buffer[4] == 'R')
     {
       return MEMCACHED_ERROR;
     }
     // EXISTS
-    else if (buffer[1] == 'X' and buffer[2] == 'I' and buffer[3] == 'S' and buffer[4] == 'T'
-             and buffer[5] == 'S')
+    else if (buffer[1] == 'X')
     {
       return MEMCACHED_DATA_EXISTS;
     }
@@ -397,29 +583,7 @@ static memcached_return_t textual_read_one_response(memcached_instance_st *insta
   case '7': /* INCR/DECR response */
   case '8': /* INCR/DECR response */
   case '9': /* INCR/DECR response */
-  {
-    errno = 0;
-    unsigned long long int auto_return_value = strtoull(buffer, (char **) NULL, 10);
-
-    if (auto_return_value == ULLONG_MAX and errno == ERANGE) {
-      result->numeric_value = UINT64_MAX;
-      return memcached_set_error(*instance, MEMCACHED_UNKNOWN_READ_FAILURE, MEMCACHED_AT,
-                                 memcached_literal_param("Numeric response was out of range"));
-    } else if (errno == EINVAL) {
-      result->numeric_value = UINT64_MAX;
-      return memcached_set_error(*instance, MEMCACHED_UNKNOWN_READ_FAILURE, MEMCACHED_AT,
-                                 memcached_literal_param("Numeric response was out of range"));
-    } else if (errno) {
-      result->numeric_value = UINT64_MAX;
-      return memcached_set_error(*instance, MEMCACHED_UNKNOWN_READ_FAILURE, MEMCACHED_AT,
-                                 memcached_literal_param("Numeric response was out of range"));
-    }
-
-    result->numeric_value = uint64_t(auto_return_value);
-
-    WATCHPOINT_STRING(buffer);
-    return MEMCACHED_SUCCESS;
-  }
+    return ascii_read_inc(instance, buffer, result);
 
   default:
     break;

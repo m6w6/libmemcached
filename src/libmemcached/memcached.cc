@@ -26,6 +26,7 @@ static inline bool _memcached_init(Memcached *self) {
 
   self->flags.auto_eject_hosts = false;
   self->flags.binary_protocol = false;
+  self->flags.meta_protocol = false;
   self->flags.buffer_requests = false;
   self->flags.hash_with_namespace = false;
   self->flags.no_block = false;

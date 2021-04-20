@@ -131,6 +131,11 @@ void MemcachedCluster::enableBinaryProto(bool enable) {
       MEMCACHED_BEHAVIOR_BINARY_PROTOCOL, enable));
 }
 
+void MemcachedCluster::enableMetaProto(bool enable) {
+  REQUIRE(MEMCACHED_SUCCESS == memcached_behavior_set(&memc,
+      MEMCACHED_BEHAVIOR_META_PROTOCOL, enable));
+}
+
 void MemcachedCluster::enableBuffering(bool enable) {
   REQUIRE(MEMCACHED_SUCCESS == memcached_behavior_set(&memc,
       MEMCACHED_BEHAVIOR_BUFFER_REQUESTS, enable));
@@ -145,4 +150,16 @@ void MemcachedCluster::killOneServer() const {
   const auto &servers = cluster.getServers();
   const auto &victim = servers[random_num((size_t)0, servers.size() - 1)];
   ::kill(victim.getPid(), SIGKILL);
+}
+
+bool MemcachedCluster::isGEVersion(uint8_t major, uint8_t minor, uint8_t micro) {
+  REQUIRE(MEMCACHED_SUCCESS == memcached_version(&memc));
+  auto inst = memcached_server_instance_by_position(&memc, 0);
+  auto maj = memcached_server_major_version(inst);
+  auto min = memcached_server_minor_version(inst);
+  auto mic = memcached_server_micro_version(inst);
+
+  return (maj > major)
+      || (maj == major && min > minor)
+      || (maj == major && min == minor && mic >= micro);
 }

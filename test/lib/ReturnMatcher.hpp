@@ -22,9 +22,20 @@ public:
   explicit ReturnMatcher(memcached_st *memc_,
                          memcached_return_t expected_ = MEMCACHED_SUCCESS)
   : memc{memc_}
-  , expected{expected_} {}
+  , expected{expected_}
+  , actual{new actual_st} {}
 
-  ReturnMatcher(const ReturnMatcher &) = default;
+  ~ReturnMatcher() override {
+    if (actual) {
+      delete actual;
+    }
+    actual = nullptr;
+  }
+  ReturnMatcher(const ReturnMatcher &other) {
+      expected = other.expected;
+      memc = other.memc;
+      actual = new actual_st(other.actual->v);
+  }
 
   bool match(const memcached_return_t &arg) const override;
   ReturnMatcher success();
@@ -37,6 +48,13 @@ protected:
 private:
   memcached_st *memc;
   memcached_return_t expected{MEMCACHED_SUCCESS};
+
+  struct actual_st {
+    memcached_return_t v;
+    explicit actual_st(memcached_return_t _v = MEMCACHED_SUCCESS)
+    : v{_v} {}
+  };
+  actual_st *actual;
 };
 
 class LoneReturnMatcher {

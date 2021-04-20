@@ -5,6 +5,22 @@
 ChangeLog v1.1
 ==============
 
+v 1.1.0-dev
+-----------
+
+..
+
+   released TBD
+
+
+**Changes from beta3:**
+
+
+* Initial transparent support for the memcached META protocol:
+
+  * Add ``MEMCACHED_BEHAVIOR_META_PROTOCOL`` enabling the META protocol.
+  * Add ``-m`` switch to client programs enabling the META protocol.
+
 v 1.1.0-beta3
 -------------
 
@@ -55,10 +71,6 @@ v 1.1.0-beta1
 
    released 2020-12-21
 
-
-**NOTE:**\ :raw-html-m2r:`<br>`
-This is a bug fix release, not a feature release. The minor version number
-was incremented due to the following changes:
 
 
 * Ported build system to CMake.
