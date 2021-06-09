@@ -4,13 +4,19 @@
 TEST_CASE("memcached_append") {
   pair<string, MemcachedCluster> tests[] = {
       {"bin_mixed", MemcachedCluster::mixed()},
-      {"mixed", MemcachedCluster::mixed()}
+      {"meta_mixed", MemcachedCluster::mixed()},
+      {"ascii_mixed", MemcachedCluster::mixed()}
   };
 
   tests[0].second.enableBinaryProto();
+  tests[1].second.enableMetaProto();
 
   LOOPED_SECTION(tests) {
     auto memc = &test.memc;
+
+    if (name == "meta_mixed" && !test.isGEVersion(1, 6)) {
+      continue;
+    }
 
     SECTION("text") {
       const char *values[] = {

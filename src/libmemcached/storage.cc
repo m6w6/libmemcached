@@ -177,6 +177,75 @@ static memcached_return_t memcached_send_binary(Memcached *ptr, memcached_instan
 }
 
 static memcached_return_t
+memcached_send_meta(memcached_st *ptr, memcached_instance_st *instance,
+                    const char *key, size_t key_len,
+                    const char *val, size_t val_len,
+                    time_t expiration, uint32_t flags, uint64_t cas,
+                    bool flush, memcached_storage_action_t verb) {
+  static const char modes[] = "SREPAS";
+  char fl_buf[32] = " F", cs_buf[32] = " C", ex_buf[32] = " T", sz_buf[32] = " S";
+  size_t io_num = 0, fl_len = strlen(fl_buf), cs_len = strlen(cs_buf), ex_len = strlen(ex_buf), sz_len = strlen(sz_buf);
+  libmemcached_io_vector_st io_vec[16] = {};
+
+  io_vec[io_num++] = {memcached_literal_param("ms ")};
+  io_vec[io_num++] = {memcached_array_string(ptr->_namespace),
+                      memcached_array_size(ptr->_namespace)};
+  io_vec[io_num++] = {key, key_len};
+
+  if (verb != SET_OP) {
+    io_vec[io_num++] = {memcached_literal_param(" M")};
+    io_vec[io_num++] = {&modes[verb], 1};
+  }
+
+  if (!memcached_is_replying(ptr)) {
+    io_vec[io_num++] = { memcached_literal_param(" q")};
+  }
+
+  fl_len += snprintf(fl_buf + fl_len, sizeof(fl_buf) - fl_len, "%" PRIu32, flags);
+  io_vec[io_num++] = {fl_buf, fl_len};
+  if (expiration) {
+    ex_len += snprintf(ex_buf + ex_len, sizeof(ex_buf) - ex_len, "%" PRIi64, (int64_t) expiration);
+    io_vec[io_num++] = {ex_buf, ex_len};
+  }
+  if (cas) {
+    cs_len += snprintf(cs_buf + cs_len, sizeof(cs_buf) - cs_len, "%" PRIu64, cas);
+    io_vec[io_num++] = {cs_buf, cs_len};
+  }
+
+  /* we have to send a data block even if it's empty, else memcached errors out with ITEM TOO BIG */
+  sz_len += snprintf(sz_buf + sz_len, sizeof(sz_buf) - sz_len, "%" PRIu64, (uint64_t) val_len);
+  io_vec[io_num++] = {sz_buf, sz_len};
+  io_vec[io_num++] = {memcached_literal_param("\r\n")};
+  io_vec[io_num++] = {val, val_len};
+  io_vec[io_num++] = {memcached_literal_param("\r\n")};
+
+  /* Send command header */
+  memcached_return_t rc = memcached_vdo(instance, io_vec, io_num, flush);
+
+  // If we should not reply, return with MEMCACHED_SUCCESS, unless error
+  if (!memcached_is_replying(ptr)) {
+    return memcached_success(rc) ? MEMCACHED_SUCCESS : rc;
+  }
+
+  if (!flush) {
+    return memcached_success(rc) ? MEMCACHED_BUFFERED : rc;
+  }
+
+  if (rc == MEMCACHED_SUCCESS) {
+    char buffer[MEMCACHED_DEFAULT_COMMAND_SIZE];
+    rc = memcached_response(instance, buffer, sizeof(buffer), NULL);
+
+    if (rc == MEMCACHED_SUCCESS) {
+      return MEMCACHED_SUCCESS;
+    }
+  }
+
+  assert(memcached_failed(rc));
+
+  return rc;
+}
+
+static memcached_return_t
 memcached_send_ascii(Memcached *ptr, memcached_instance_st *instance, const char *key,
                      const size_t key_length, const char *value, const size_t value_length,
                      const time_t expiration, const uint32_t flags, const uint64_t cas,
@@ -312,6 +381,9 @@ memcached_send(memcached_st *shell, const char *group_key, size_t group_key_leng
   if (memcached_is_binary(ptr)) {
     rc = memcached_send_binary(ptr, instance, server_key, key, key_length, value, value_length,
                                expiration, flags, cas, flush, reply, verb);
+  } else if (memcached_is_meta(ptr)) {
+    rc = memcached_send_meta(ptr, instance, key, key_length, value, value_length, expiration,
+                             flags, cas, flush, verb);
   } else {
     rc = memcached_send_ascii(ptr, instance, key, key_length, value, value_length, expiration,
                               flags, cas, flush, reply, verb);

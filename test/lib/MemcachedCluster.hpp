@@ -39,6 +39,7 @@ public:
   MemcachedCluster &operator=(MemcachedCluster &&mc) noexcept;
 
   void enableBinaryProto(bool enable = true);
+  void enableMetaProto(bool enable = true);
   void enableBuffering(bool enable = true);
   void enableReplication();
   void flush();
@@ -53,6 +54,7 @@ public:
 #endif
 
   void killOneServer() const;
+  bool isGEVersion(uint8_t major, uint8_t minor = 0, uint8_t micro = 0);
 
 private:
   behaviors_t to_set;

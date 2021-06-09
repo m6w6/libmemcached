@@ -45,12 +45,10 @@ using socket_or_port_t = variant<string, int>;
   for (auto &[name, test] : tests) DYNAMIC_SECTION("test " << name)
 #define REQUIRE_SUCCESS(rc) \
   do { \
-    INFO("expected: SUCCESS"); \
     REQUIRE_THAT(rc, test.returns.success()); \
   } while (0)
 #define REQUIRE_RC(rc, call) \
   do { \
-    INFO("expected: " << memcached_strerror(nullptr, rc)); \
     REQUIRE_THAT(call, test.returns(rc)); \
   } while (0)
 

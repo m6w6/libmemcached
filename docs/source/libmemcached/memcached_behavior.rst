@@ -179,6 +179,12 @@ SYNOPSIS
         Enable the use of the binary protocol. Please note that you cannot
         toggle this flag on an open connection.
 
+    .. enumerator:: MEMCACHED_BEHAVIOR_META_PROTOCOL
+
+        Enable the use of the META protocol. This setting can be switched on and
+        off at will when using an ASCII protocol connection, but causes
+        a reconnect when using the binary protocol.
+
     .. enumerator:: MEMCACHED_BEHAVIOR_IO_MSG_WATERMARK
 
         Set this value to tune the number of messages that may be sent before

@@ -43,7 +43,7 @@ struct memcached_st {
     bool tcp_keepalive : 1;
     bool is_aes : 1;
     bool is_fetching_version : 1;
-    bool not_used : 1;
+    bool meta_protocol : 1;
   } flags;
 
   memcached_server_distribution_t distribution;

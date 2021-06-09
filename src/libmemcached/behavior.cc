@@ -96,12 +96,20 @@ memcached_return_t memcached_behavior_set(memcached_st *shell, const memcached_b
     break;
 
   case MEMCACHED_BEHAVIOR_BINARY_PROTOCOL:
-    send_quit(
-        ptr); // We need t shutdown all of the connections to make sure we do the correct protocol
+    // We need t shutdown all of the connections to make sure we do the correct protocol
+    send_quit(ptr);
     if (data) {
       ptr->flags.verify_key = false;
     }
     ptr->flags.binary_protocol = bool(data);
+    break;
+
+  case MEMCACHED_BEHAVIOR_META_PROTOCOL:
+    if (data && ptr->flags.binary_protocol) {
+      send_quit(ptr);
+      ptr->flags.binary_protocol = false;
+    }
+    ptr->flags.meta_protocol = bool(data);
     break;
 
   case MEMCACHED_BEHAVIOR_SUPPORT_CAS:
@@ -623,6 +631,8 @@ const char *libmemcached_string_behavior(const memcached_behavior_t flag) {
     return "MEMCACHED_BEHAVIOR_KETAMA_HASH";
   case MEMCACHED_BEHAVIOR_BINARY_PROTOCOL:
     return "MEMCACHED_BEHAVIOR_BINARY_PROTOCOL";
+  case MEMCACHED_BEHAVIOR_META_PROTOCOL:
+    return "MEMCACHED_BEHAVIOR_META_PROTOCOL";
   case MEMCACHED_BEHAVIOR_SND_TIMEOUT:
     return "MEMCACHED_BEHAVIOR_SND_TIMEOUT";
   case MEMCACHED_BEHAVIOR_RCV_TIMEOUT:

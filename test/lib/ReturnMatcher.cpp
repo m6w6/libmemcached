@@ -1,6 +1,8 @@
 #include "ReturnMatcher.hpp"
+#include "libmemcached/error.hpp"
 
 bool ReturnMatcher::match(const memcached_return_t &arg) const {
+  actual->v = arg;
   if (arg != expected) {
     if (expected == MEMCACHED_SUCCESS && arg == MEMCACHED_BUFFERED && memc) {
       return memcached_behavior_get(memc, MEMCACHED_BEHAVIOR_BUFFER_REQUESTS);
@@ -24,7 +26,11 @@ ReturnMatcher &ReturnMatcher::operator=(memcached_st *memc_) {
 }
 
 string ReturnMatcher::describe() const {
-  return "is " + to_string(expected)
-         + "\n  actual: " + memcached_last_error_message(memc);
+  return "is " + to_string(expected) + "\n"
+      +  "expected:\n"
+      +  "  " + memcached_strerror(memc, expected) + "\n"
+      +  "actual:\n"
+      +  "  " + memcached_strerror(memc, actual->v) + "\n"
+      +  "  " + (memcached_has_current_error(*memc) ? memcached_last_error_message(memc) : "");
 }
 

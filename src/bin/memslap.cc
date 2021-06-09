@@ -242,7 +242,7 @@ int main(int argc, char *argv[]) {
   opt.add("noreply", 'R', no_argument, "Enable the NOREPLY behavior for storage commands.")
       .apply = [](const client_options &opt_, const client_options::extended_option &ext, memcached_st *memc) {
     if (MEMCACHED_SUCCESS != memcached_behavior_set(memc, MEMCACHED_BEHAVIOR_NOREPLY, ext.set)) {
-      if(!opt_.isset("quiet")) {
+      if (!opt_.isset("quiet")) {
         std::cerr << memcached_last_error_message(memc);
       }
       return false;

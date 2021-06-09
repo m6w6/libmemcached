@@ -15,6 +15,29 @@
 
 #include "libmemcached/common.h"
 
+static memcached_return_t meta_touch(memcached_instance_st *instance, const char *key, size_t key_len, time_t expiration) {
+  char ex_buf[32] = " T";
+  size_t ex_len = strlen(ex_buf);
+
+  ex_len += snprintf(ex_buf + ex_len, sizeof(ex_buf) - ex_len, "%lu", (unsigned long) expiration);
+
+  libmemcached_io_vector_st io_vec[] = {
+      {memcached_literal_param("mg ")},
+      {memcached_array_string(instance->root->_namespace),
+       memcached_array_size(instance->root->_namespace)},
+      {key, key_len},
+      {ex_buf, ex_len},
+      {memcached_literal_param("\r\n")}
+  };
+
+  memcached_return_t rc;
+  if (memcached_failed(rc = memcached_vdo(instance, io_vec, 5, true))) {
+    return memcached_set_error(*instance, MEMCACHED_WRITE_FAILURE, MEMCACHED_AT);
+  }
+
+  return rc;
+}
+
 static memcached_return_t ascii_touch(memcached_instance_st *instance, const char *key,
                                       size_t key_length, time_t expiration) {
   char expiration_buffer[MEMCACHED_MAXIMUM_INTEGER_DISPLAY_LENGTH + 1];
@@ -98,8 +121,10 @@ memcached_return_t memcached_touch_by_key(memcached_st *shell, const char *group
       memcached_generate_hash_with_redistribution(ptr, group_key, group_key_length);
   memcached_instance_st *instance = memcached_instance_fetch(ptr, server_key);
 
-  if (ptr->flags.binary_protocol) {
+  if (memcached_is_binary(ptr)) {
     rc = binary_touch(instance, key, key_length, expiration);
+  } else if (memcached_is_meta(ptr)) {
+    rc = meta_touch(instance, key, key_length, expiration);
   } else {
     rc = ascii_touch(instance, key, key_length, expiration);
   }
